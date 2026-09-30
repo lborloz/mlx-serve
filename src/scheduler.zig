@@ -57,6 +57,7 @@ const model_discovery = @import("model_discovery.zig");
 const gguf_meta = @import("gguf_meta.zig");
 const arch_ds4 = if (@import("build_options").macos_engines) @import("arch/ds4.zig") else @import("arch/ds4_stub.zig");
 const arch_llama = if (@import("build_options").macos_engines) @import("arch/llama.zig") else @import("arch/llama_stub.zig");
+const mlx_gguf = @import("arch/mlx_gguf.zig");
 const log = @import("log.zig");
 const io_util = @import("io_util.zig");
 const status = @import("status.zig");
@@ -1971,7 +1972,7 @@ pub const Scheduler = struct {
         var owned = cpu_state;
         var owned_active: bool = true;
         defer if (owned_active) freeCpuState(self.allocator, &owned);
-        applyModelSettings(owned.config, owned.chat_config, &settings);
+        applyModelSettings(owned.config, owned.chat_config, &settings, self.mtp_enabled);
         // The resolved .gguf path (when this is a GGUF entry) is borrowed by
         // the LoadRequest until `done`; the engines dupe what they keep, so
         // it's released here on success AND failure.
@@ -2699,12 +2700,14 @@ const GgufRoute = struct {
 /// Both load construction sites (here and main.zig's startup load) stamp the
 /// per-model settings onto the config the bills and defaults read.
 /// The kwargs strings MOVE to the freshly loaded `chat_config` (same allocator).
-pub fn applyModelSettings(config: *ModelConfig, chat_config: *ChatConfig, o: *model_settings.Override) void {
+/// `mtp_flag` false (`--no-mtp`) stamps the head off so the memory bills skip it.
+pub fn applyModelSettings(config: *ModelConfig, chat_config: *ChatConfig, o: *model_settings.Override, mtp_flag: bool) void {
     config.ctx_override = o.ctx_size orelse 0;
     config.kv_quant_override = o.kv_quant;
-    config.mtp_override = o.mtp;
+    config.mtp_override = o.mtp orelse if (mtp_flag) null else false;
     config.mtp_acceptance_override = o.mtp_acceptance;
     config.mtp_greedy_tail_override = o.mtp_greedy_tail;
+    config.int8_prefill_override = o.int8_prefill;
     config.drafter_override = o.drafter;
     o.drafter = null;
     chat_config.chat_template_kwargs = o.chat_template_kwargs;
@@ -2741,7 +2744,9 @@ fn preloadCpuState(allocator: std.mem.Allocator, io: std.Io, model_dir: []const 
     // is checked before any config.json read ("GGUF files bypass the MLX
     // dispatch entirely"). The embedded engine owns the real tokenizer +
     // chat template, so the CPU state is a stub, like the media path below.
-    if (model_discovery.isGgufModelPath(io, model_dir)) {
+    const mlx_gguf_path = mlx_gguf.servablePath(io, allocator, model_dir);
+    defer if (mlx_gguf_path) |p| allocator.free(p);
+    if (mlx_gguf_path == null and model_discovery.isGgufModelPath(io, model_dir)) {
         return preloadGgufCpuState(allocator, io, model_dir, gguf_ctx_size);
     }
 
@@ -3225,6 +3230,7 @@ fn doLoadGenOnInferenceThread(sch: *Scheduler, params: anytype, modality: gen_mo
 /// "unknown" by the caller, which then skips the check). Symlinked weights
 /// count (statFile follows links) — an HF hub-cache snapshot is ALL symlinks.
 fn modelDiskBytes(io: std.Io, model_dir: []const u8) u64 {
+    if (mlx_gguf.weightBytes(io, model_dir)) |bytes| return bytes;
     var dir = std.Io.Dir.openDirAbsolute(io, model_dir, .{ .iterate = true }) catch return 0;
     defer dir.close(io);
     // A pack's index names the shards the loader reads; a stray shard beside
@@ -5125,6 +5131,10 @@ fn runLoadRequest(sch: *Scheduler, req: *LoadRequest) void {
         sch.registry.finalizeEvictionLocked(victim);
         sch.registry.mutex.unlock(sch.io);
     }
+    // unloadResident freed the victims into MLX's allocator cache — clear it
+    // BEFORE the load: its preflight reads OS-level availability, and the
+    // parked pool would make it refuse a load that fits.
+    _ = mlx.mlx_clear_cache();
 
     // Step 2: the actual load. On error, mark .error_state and signal done
     // (conn thread frees pre-parsed CPU state — ownership stays on req on
@@ -6491,7 +6501,7 @@ fn runPrefill(sch: *Scheduler, slot: *Slot) !void {
     // per-request, so prefix matching would reuse stale features.
     var prefill_tokens: []const u32 = slot.full_prompt;
     var hot_matched: u32 = 0;
-    // Did the restore check out its entry (restore by move)? Only then are its rows credited.
+    // Are the restored rows the slot's own? A RAM checkout or a disk restore both credit them.
     var hot_checked_out: bool = false;
     // The DFlash assistant's context rides the prefix cache: a restore
     // forwards no trunk layers, so without it the assistant starts every
@@ -6551,7 +6561,7 @@ fn runPrefill(sch: *Scheduler, slot: *Slot) !void {
             if (lookup.matched > 0 and lookup.matched <= slot.full_prompt.len) {
                 hot_matched = @intCast(lookup.matched);
                 prefill_tokens = slot.full_prompt[hot_matched..];
-                hot_checked_out = lookup.checked_out;
+                hot_checked_out = lookup.checked_out or lookup.slot_owned;
                 slot.restored_entry = lookup.entry_id;
             }
             if (dfl_target) |*dc| {
@@ -10536,4 +10546,19 @@ test "takeMergeable: merges the contiguous run of same-model decision jobs withi
     batch[0] = &media;
     try q.append(a, &r[1]);
     try testing.expectEqual(@as(usize, 1), takeMergeable(&q, &batch, 1));
+}
+
+test "applyModelSettings: --no-mtp stamps the head off unless the model's own setting names it" {
+    var cc = ChatConfig{ .chat_template = "", .bos_token = null, .eos_token = null, .add_bos_token = false, .allocator = testing.allocator };
+    for ([_]struct { flag: bool, setting: ?bool, want: ?bool }{
+        .{ .flag = false, .setting = null, .want = false },
+        .{ .flag = false, .setting = true, .want = true },
+        .{ .flag = true, .setting = null, .want = null },
+        .{ .flag = true, .setting = false, .want = false },
+    }) |c| {
+        var cfg = ModelConfig{};
+        var o = model_settings.Override{ .mtp = c.setting };
+        applyModelSettings(&cfg, &cc, &o, c.flag);
+        try testing.expectEqual(c.want, cfg.mtp_override);
+    }
 }
