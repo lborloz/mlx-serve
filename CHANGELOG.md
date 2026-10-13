@@ -1,10 +1,53 @@
 # Changelog
 
-## v26.10.2 — Many-User Fix - UNRELEASED - DEV
+## v26.10.2 — Songs, Films & Sound Effects - The Newest Frontier Models - Linux - Rock Solid Under Load
+
+### Highlights
+
+- **Tell a story, get a film.** Video storyboards turn a story into a run of shots, each one picking up where the last ended, joined into a single clip up to two minutes long. Describe it in a sentence and Enhance writes the shots for you, even from a first frame you attach.
+
+- **Your Mac is a music and sound studio.** YuE2 writes whole songs with vocals from your lyrics and a style, and shows you the score so you can change the melody. Stable Audio 3 makes sound effects in about a second. AI Radio plays an endless station on any theme, composing each track while the last one plays, on MLX-Amp, a classic skinned player with a live spectrum.
+
+- **Pictures in about 8 seconds.** Qwen-Image-2.1-Turbo paints a 1024x1024 image in about 8 seconds on an M5 Ultra, and Enhance turns a few words into a rich, detailed prompt.
+
+- **Chat never waits for the art.** Agents and chats keep answering while the same server paints, speaks, composes, films or sculpts in 3D. Two coding agents kept replying within a second while an image, speech, music and a textured 3D model rendered beside them.
+
+- **The newest frontier models, at home.** DeepSeek-V4.1-Flash (even on a 128 GB Mac, streaming its experts from the SSD on @davidtai's mlx-stream), GLM-5.3-Flash, MiMo-V2.6-Flash and Kolibri-1 (thanks @albinekb) run locally with thinking and tool calls, and EmbeddingGemma 2 understands text, images and video for search.
+
+- **MLX-serve comes to Linux.** NVIDIA DGX Spark and cards from the RTX 20 to the 50 series run MLX models and media generation, and one script builds everything from a fresh checkout. Same exact MLX models that run on Mac + embedded DS4 and Llama.cpp 0.6.0 for GGUF. Every release now comes with ready-made Linux downloads for x64 and arm64.
+
+- **MLX Serve Web.** The built-in web page is now one place to chat, make images, audio and video, browse your library and watch the server live, and it opens with no model loaded. Its Code Launcher hands you one command that sets up Claude Code, pi, omp, OpenCode or Grok on another computer, pointed at this server. Thanks @alinselea.
+
+- **Faster where you feel it.** Qwen3.8 Flash Next decodes faster on its own and keeps batching at long context and with images (thanks @STRML), and its first prompt after a load no longer stalls (thanks @beamivalice). oMLX's Flash Next packs run at 172 tok/s on an M5 Ultra (133 in oMLX itself). Textured 3D models finish in about a minute instead of ten, MiniMax-H3 Turbo videos render twice as fast, Qwen-Image edits with reference pictures run faster (thanks @Anionex), Bonsai 2 27B nearly doubles its speed on M4 Macs, and Nemotron-3 answers short prompts sooner (thanks @sbusso). GGUF models now answer several requests at once and draft ahead, and M1 to M3 Macs serving 8 to 16 chats at once decode up to 1.75x faster (thanks @ursk).
+
+- **Rock solid under pressure.** Before this release we spent days trying to break mlx-serve: hostile requests, thousands of agent turns at once, models loaded and unloaded under traffic, cache files corrupted on purpose. We fixed every crash we found, five of which could take the server down, and every way a failed request could spoil the next one. Qwen3.8 Flash Next then served 16 agents at once for 50 minutes without a single failed request.
 
 ### Fixes
-- Serving more than 16 simultaneous chats on Qwen3.8 27B with its drafter could fail a whole batch of streams mid-answer; every stream now completes (measured to 32 at once on an M5 Ultra).
-- Sushi Flash Next packs with unquantized BF16 n-gram tables now load when their table metadata declares no quantization groups.
+
+- **Agents stay on track.** A model caught repeating itself while thinking now finishes the thought and answers (thanks @STRML), and an agent with a persona still knows today's date (thanks @lojza3d). "You must call a tool" is honored on Qwen 3.5 and later. Qwen3.8 keeps its earlier reasoning, so follow-ups answer better and up to 8 seconds sooner in long sessions. Reading a large file no longer sends the app's agent into a loop, and Stop really stops.
+- **Long prompts read right.** Llama 3.x models no longer answer with empty text past about 1,000 tokens, and GLM-5.3, Llama 3, LFM2.5, K2, Qwen and DeepSeek-V4 read code, indentation and full-width spaces exactly as their makers' tokenizers do (thanks @oinani0721). Qwen3.8 Flash Next keeps its linear-attention memory in f32 as its reference does, so slowly fading heads fade again (thanks @oinani0721; twice that state's memory, `MLX_SERVE_GDN_STATE_F32=0` restores bf16).
+- **Memory that makes sense.** A model that fits is no longer refused (thanks @kmahara), switching to a big model right after unloading another just works, turning prefix caching off frees its memory (thanks @beamivalice), a prompt that does not fit says how much it needed (thanks @shikyo13), a 16 GB Mac gives a big model a real context instead of 870 tokens (Qwen3.5-9B: 15k), MiniMax-H3 refuses a canvas your Mac cannot hold before it starts (thanks @sisoje), and running out of memory says so plainly instead of breaking the next request.
+- **Caches that stick.** Conversations with images resume from the SSD cache (thanks @brandondyal), a mid-conversation system message keeps the cache working (thanks @Cianidos), a very long session that leaves memory comes back from the SSD whole instead of three quarters of it (thanks @Dankpaws), an agent's next tool call picks up where its last answer ended (thanks @shikyo13), hybrid models restore from the SSD without crashing (thanks @sisoje), and a damaged cache file is set aside once instead of retried forever.
+- **Plays well with your tools.** OpenAI, Anthropic and Ollama clients get answers that follow the spec: sampling penalties and a model's own defaults apply everywhere (thanks @brandondyal, @otarkhan), JSON schemas with references work, Anthropic token counts match Anthropic's (thanks @Cianidos), Responses streams keep every character whole and report cache hits (thanks @GGGBB, @adam-r-kowalski), slow readers get the whole stream (thanks @adam-r-kowalski), streamed and non-streamed replies match to the byte, and lm-eval runs out of the box (thanks @brandondyal). Codex keeps your own MCP servers and logins and OpenCode is picked by its version (thanks @kmahara), omp, pi and OpenCode 2 thinking levels work as labelled, headless servers keep their speculation flags (thanks @lborloz), the web console works behind a reverse proxy (thanks @pan-patryk), `mlx-serve pull` downloads media models too, and GLM-5.3-Flash packs made by oMLX 0.7.1 load, image input included (thanks @tpischke).
+- **Creative tools finish the job.** Kokoro reads whole paragraphs aloud, long MiniMax-H3 clips no longer come out black, WebP pictures work as references, and Qwen-Image keeps transparent backgrounds (thanks @latent-variable).
+- **A smoother app.** Chats, sidebar groups, their order and terminal rows are saved in one database, so saving is instant, one bad chat can't empty the sidebar, and a branched chat stays in its group (thanks @lojza3d). Photos no longer stall typing (thanks @jasontitus), Japanese input keeps its Enter key and voice mode listens in your language (thanks @kmahara), attached videos reach the model, a GGUF you pick answers its first message, the memory reserve is a size you choose (thanks @sisoje), the benchmark report reads better (thanks @beamivalice), the agent menus stop opening the browser (thanks @davidfekke), and deleting a provider no longer crashes the app.
+- **Safer by default.** Malformed or hostile requests are refused instead of crashing the server, a connection that goes silent is let go after 30 seconds, and only the server's own Mac can point it at files on disk.
+- **Linux and NVIDIA.** MoE models, Bonsai 2 and media models work on NVIDIA cards, a second server can no longer steal a port already in use, and packs that need Apple's GPU say so up front.
+
+### Also new
+
+- **A simpler app.** The server starts with the app, and Preload decides whether your model is ready right away. Settings put Server and Memory first, every setting explains itself in one plain sentence, and the tray's Web UI button opens the built-in web page.
+- **Korean.** The app speaks Korean (thanks @hemanpapa-coder), and Settings search finds settings by their translated names.
+- **Your defaults, everywhere.** Set temperature, penalties and reasoning budget once, for all models or per model, and lock them if you want them to win over the client (thanks @Cianidos).
+- **More launchers.** ZCode (thanks @beamivalice), fx and Grok join the app's Code menu and `mlx-serve launch`, and the console Monitor keeps 24 hours of history in your browser and names each agent (thanks @STRML).
+- **More decision models.** LiquidAI's D1 and Cloudflare's Clef and Clef-Flash (thanks @CerebralCoding) join Laya and Kev in one Decisions pane.
+- **MiniCPM-V 4.7 sees.** OpenBMB's MiniCPM-V 4.7 reads images, from screenshots to pages of small print: large pictures are cut into crops so fine text stays legible, and a pack without the vision tower still answers text.
+- **GLM-5.3 sees.** GLM-5.3-Flash now reads images, so an agent on it can look at its own screenshots.
+- **Agents build better games.** The mlx-serve skill that coding agents get adds a 3D game guide (movement, foliage, lighting) and one script that generates every asset, then makes textures seamless, cuts out sprites and sizes 3D models.
+- **More packs load as they are.** oMLX's Flash Next packs (thanks @otarkhan) and Sushi's GLM-5.3, MiMo and BF16 Flash Next packs (thanks @beamivalice).
+- **For power users.** An SSD-only prompt cache that holds no idle RAM (thanks @Cianidos), DFlash2 drafting for GLM-5.3, MTP depth bounds and greedy tail, DSpark that honors every opt-out (thanks @jasontitus), llama.cpp v0.6.0, and metrics that count every outcome once (thanks @STRML). The Homebrew cask is now `mlx-serve`; run `brew trust ddalcu/mlx-serve` once.
+- **MiniMax-H3 recipes.** Turbo at 4 steps is the fastest; Turbo off at 30 steps gives the cleanest picture (a 10-second 1312x736 clip in about 18 minutes on an M5 Ultra).
+- **Thank you.** This release carries work from @adam-r-kowalski, @albinekb, @alinselea, @Anionex, @beamivalice, @brandondyal, @CerebralCoding, @Cianidos, @davidfekke, @davidtai, @GGGBB, @hemanpapa-coder, @jasontitus, @kmahara, @latent-variable, @lborloz, @lojza3d, @oinani0721, @otarkhan, @pan-patryk, @sbusso, @shikyo13, @sisoje, @STRML and @ursk, and from @Dankpaws's bug report.
 
 ---
 

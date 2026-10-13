@@ -179,8 +179,13 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
         steering.append(text, for: sessionId)
     }
 
-    func clearSteeringNote(for sessionId: UUID) {
-        steering.clear(for: sessionId)
+    func pauseSteeringNote(for sessionId: UUID) {
+        steering.pause(for: sessionId)
+    }
+
+    func restoreSteeringNote(for sessionId: UUID, into draft: String,
+                             hasMarkedText: Bool) -> String? {
+        steering.restore(for: sessionId, into: draft, hasMarkedText: hasMarkedText)
     }
 
     /// Only the turn that still owns the slot hands its note on; a stopped or
@@ -194,7 +199,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
               session(sessionId) != nil,
               Self.canRunTurn(serverRunning: server.status == .running, apple: appState.useAppleModel),
               let note = steering.take(for: sessionId) else { return }
-        runTurn(sessionId: sessionId, userText: note, images: nil, audio: nil,
+        runTurn(sessionId: sessionId, userText: note, images: nil, videos: nil, audio: nil,
                 config: config.revokingTools(revoked), approval: approval)
     }
 
@@ -257,9 +262,9 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
     /// defense in depth for any future removal path.
     func stopIfOrphaned() {
         let existing = Set(appState.chatSessions.map(\.id))
+        steering.retain(only: existing)
         for sid in ledger.orphaned(existingSessions: existing) {
             stop(sessionId: sid)
-            steering.clear(for: sid)
             activity.markSeen(sid)
         }
     }
@@ -317,6 +322,8 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
         var reasoningEffort: ReasoningEffort = .low
         /// The agent's own voice for this turn; nil = follow Settings.
         var voice: AgentVoice? = nil
+        /// A surface's own model pin (a scheduled task); nil = the picker's selection.
+        var modelPath: String? = nil
         /// The spoken name this turn answers to (the agent's phrase when it has
         /// one). nil = the app's own phrase.
         var wakePhrase: String? = nil
@@ -358,19 +365,32 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
             thinking ? reasoningEffort.rawValue : nil
         }
 
-        /// The per-request defaults for this turn: the user's saved sampling
-        /// with the agent's overrides laid on top. An override REPLACES the
-        /// saved value — including with the canonical "off" (top_k 0, repeat
-        /// 1.0, presence 0.0, budget -1), which clears the global rather than
-        /// leaving it standing, mapped to an omitted field exactly as
-        /// `RequestDefaults.from` maps it.
-        func requestDefaults(from opts: ServerOptions) -> APIClient.RequestDefaults {
-            var d = APIClient.RequestDefaults.from(opts)
+        func thinkingForRequest(_ options: ServerOptions, inheritGeneration: Bool) -> Bool {
+            enableThinking || (!inheritGeneration && options.defaultEnableThinking)
+        }
+
+        /// Local servers resolve inherited generation defaults; explicit agent
+        /// values, including neutral values, stay in the request. Remote clients
+        /// retain their saved sampling behavior.
+        func requestDefaults(from opts: ServerOptions, inheritGeneration: Bool = false) -> APIClient.RequestDefaults {
+            var d = inheritGeneration ? APIClient.RequestDefaults() : APIClient.RequestDefaults.from(opts)
+            d.inheritGeneration = inheritGeneration
+            d.temperatureOverride = temperature
+            d.maxTokensOverride = maxTokens
+            if inheritGeneration {
+                d.enablePLD = opts.perRequestEnablePLD.asOptionalBool
+                d.enableDrafter = opts.perRequestEnableDrafter.asOptionalBool
+                d.topK = topK
+                d.repeatPenalty = repeatPenalty
+                d.presencePenalty = presencePenalty
+                d.reasoningBudget = reasoningBudget
+            } else {
+                if let v = topK { d.topK = v > 0 ? v : nil }
+                if let v = repeatPenalty { d.repeatPenalty = v != 1.0 ? v : nil }
+                if let v = presencePenalty { d.presencePenalty = v != 0.0 ? v : nil }
+                if let v = reasoningBudget { d.reasoningBudget = v >= 0 ? v : nil }
+            }
             if let v = topP { d.topP = v }
-            if let v = topK { d.topK = v > 0 ? v : nil }
-            if let v = repeatPenalty { d.repeatPenalty = v != 1.0 ? v : nil }
-            if let v = presencePenalty { d.presencePenalty = v != 0.0 ? v : nil }
-            if let v = reasoningBudget { d.reasoningBudget = v >= 0 ? v : nil }
             return d
         }
 
@@ -415,6 +435,9 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
     // MARK: - Convenience accessors
 
     private var server: ServerManager { appState.server }
+    private func requestModelId(_ config: TurnConfig) -> String? {
+        server.chatRequestModelId(selectedPath: config.modelPath ?? appState.selectedModelPath)
+    }
     private var mcpManager: MCPManager { appState.mcpManager }
     private func session(_ id: UUID) -> ChatSession? {
         appState.chatSessions.first { $0.id == id }
@@ -548,7 +571,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
     func runTurn(sessionId: UUID,
                  userText: String,
                  images: [ChatImage]?,
-                 videos: [ChatVideo]? = nil,
+                 videos: [ChatVideo]?,
                  audio: [ChatAudio]?,
                  config: TurnConfig,
                  approval: @escaping (APIClient.ToolCall) async -> Bool) {
@@ -593,6 +616,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
         else { return }
         let text = msgs[lastUserIdx].content
         let images = msgs[lastUserIdx].images
+        let videos = msgs[lastUserIdx].videos
         let audio = msgs[lastUserIdx].audio
         // The reply about to be destroyed. `truncateMessages` drops everything
         // from the last user turn onward, so this is the only moment it can be
@@ -600,7 +624,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
         // answer is the whole reason the pager exists.
         let replaced = msgs[(lastUserIdx + 1)...].last { $0.role == .assistant && !$0.content.isEmpty }
         appState.truncateMessages(in: sessionId, keepingFirst: lastUserIdx)
-        runTurn(sessionId: sessionId, userText: text, images: images, audio: audio,
+        runTurn(sessionId: sessionId, userText: text, images: images, videos: videos, audio: audio,
                 config: config, approval: approval)
         // AFTER runTurn, which opens with `stop(sessionId:)` — and stop is a
         // turn exit, so a seed placed before it would be spent immediately.
@@ -730,7 +754,8 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                                      token: UUID, continuing: Bool = false) async {
         var failed = false
         do {
-            let thinking = config.enableThinking || appState.serverOptions.defaultEnableThinking
+            let thinking = config.thinkingForRequest(appState.serverOptions,
+                                                      inheritGeneration: server.chatIsLocal)
             let stream: AsyncThrowingStream<SSEEvent, Error>
             if appState.useAppleModel {
                 // Apple's on-device model needs no server and no load.
@@ -750,8 +775,9 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                 temperature: turnTemperature(config, default: appState.serverOptions.defaultTemperature),
                 enableThinking: thinking,
                 reasoningEffort: config.reasoningEffortParam(thinking: thinking),
-                defaults: config.requestDefaults(from: appState.serverOptions),
-                modelId: server.chatModelId,
+                defaults: config.requestDefaults(from: appState.serverOptions,
+                                                  inheritGeneration: server.chatIsLocal),
+                modelId: requestModelId(config),
                 continueFinalMessage: continuing
             )
             }
@@ -787,6 +813,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                     break
                 }
             }
+            try Task.checkCancellation()   // a cancelled stream ends rather than throws
             applyStreamBatch(coalescer.drain(), to: sessionId)   // flush the trailing batch
         } catch is CancellationError {
             // Stopped by user (`stop(sessionId:)`) or superseded by a new
@@ -845,6 +872,8 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                 // same dir the agent's built-in tools use. Per-entry `cwd` in mcp.json still wins.
                 self.mcpManager.defaultCwd = config.workingDirectory
                 await self.mcpManager.startEnabled()
+                // Stopped while servers started: end the turn without a word.
+                if Task.isCancelled { self.endTurn(sessionId: sessionId, token: token); return }
                 // Surface startup failures inline in chat — otherwise they're hidden behind the
                 // marketplace gear icon and the user just sees "MCP doesn't seem to do anything".
                 if !self.mcpManager.startErrors.isEmpty {
@@ -940,8 +969,9 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                 messages: session(sessionId)?.messages ?? [],
                 contextLength: contextLength,
                 maxTokens: turnMax,
-                buildMultimodalContent: { text, images in
-                    Self.buildMultimodalContent(text: text, images: images, serverPreprocess: useServerPreprocess)
+                buildMultimodalContent: { text, msg in
+                    Self.buildMultimodalContent(text: text, images: msg.images ?? [], videos: msg.videos ?? [],
+                                                audio: msg.audio ?? [], serverPreprocess: useServerPreprocess)
                 },
                 historyImages: useServerPreprocess
             )
@@ -1081,8 +1111,9 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                 enableThinking: config.enableThinking,
                 reasoningEffort: config.reasoningEffortParam(thinking: config.enableThinking),
                 toolsJSON: combinedToolsJSON,
-                defaults: config.requestDefaults(from: appState.serverOptions),
-                modelId: server.chatModelId
+                defaults: config.requestDefaults(from: appState.serverOptions,
+                                                  inheritGeneration: server.chatIsLocal),
+                modelId: requestModelId(config)
             )
             }
 
@@ -1121,6 +1152,9 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                         break
                     }
                 }
+                // A cancelled stream ENDS rather than throws, so Stop is checked
+                // here and after every wait below, before anything is written.
+                try Task.checkCancellation()
                 // Flush the trailing batch so the message content is complete
                 // before the post-stream truncation/pad checks read it back.
                 self.applyStreamBatch(coalescer.drain(), to: sessionId)
@@ -1139,6 +1173,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
             } catch is CancellationError {
                 throw CancellationError()
             }
+            try Task.checkCancellation()
             appState.updateLastMessage(in: sessionId, streaming: false)
 
             // A repetition-loop cut ENDS the turn, ahead of every recovery path
@@ -1321,6 +1356,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                 // one decision, made when the agent was configured, instead of a
                 // dialog per call.
                 let approved = config.autoApprove ? true : await approval(tc)
+                try Task.checkCancellation()
                 guard approved else {
                     let denied = AgentEngine.ToolResult(
                         id: tc.id,
@@ -1366,6 +1402,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
                     // Re-read: Tools can go off while this round streamed.
                     allowedTools: config.revokingTools(ledger.toolsRevoked(session: sessionId)).dispatchTools
                 )
+                try Task.checkCancellation()
                 roundOutputs.append(result.output)
                 if let handle = result.backgroundHandle { roundHandles.append(handle) }
 
@@ -1552,6 +1589,7 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
             case .image:  return try await runImageTool(args, onProgress: onProgress)
             case .speech: return try await runSpeechTool(args, onProgress: onProgress)
             case .music:  return try await runMusicTool(args, onProgress: onProgress)
+            case .sound:  return try await runSoundTool(args, onProgress: onProgress)
             case .video:  return try await runVideoTool(args, onProgress: onProgress)
             }
         } catch let missing as MediaToolArgs.MissingArgument {
@@ -1635,6 +1673,21 @@ final class ChatTurnEngine: ObservableObject, TurnRunning {
         let path = try await appState.musicGen.generateForAgent(req, server: appState.server,
                                                                 onProgress: onProgress)
         let caption = "Generated a \(req.durationSeconds)s track for: \(req.prompt). Saved to \(path)."
+        return "\(caption)\n\(AgentMediaInline.mediaRefLine(kind: .audio, path: path))"
+    }
+
+    private func runSoundTool(_ args: [String: String],
+                              onProgress: @escaping (MediaGenProgress) -> Void) async throws -> String {
+        let s = SoundGenSettings.load()
+        let model = s.resolvedModel(models: appState.server.allModels)
+        let lanId = LanPick.lanId(s.modelId)
+        if let notice = notDownloadedNotice(repo: model.repo, name: model.name,
+                                            approxGB: String(format: "%.1f", model.approxDownloadGB),
+                                            window: "Audio", lanId: lanId) { return notice }
+        let req = try MediaToolArgs.sound(args, model: model, keepResident: s.keepResident, lanId: lanId)
+        let path = try await appState.soundGen.generateForAgent(req, server: appState.server,
+                                                                onProgress: onProgress)
+        let caption = String(format: "Generated a %.1fs sound for: %@. Saved to %@.", req.durationSeconds, req.prompt, path)
         return "\(caption)\n\(AgentMediaInline.mediaRefLine(kind: .audio, path: path))"
     }
 

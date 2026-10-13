@@ -856,3 +856,27 @@ the guard green. A font is inherited through the trailing-modifier idiom: the
 block's own last line, or the couple of lines after its closing brace. Scanning
 only there surfaced every one of them, and a probe injected into a view the old
 window waved through now fails.
+
+## Deleting a provider crashed Settings
+
+Defect: the trash button on the last Providers row crashed the app (`Array._checkSubscript` under `Binding.subscript.getter`, `SettingsView.swift:991`). Cause: rows come from `ForEach($formState.providerEntries) { $entry in }`, whose `entry` reads the array BY INDEX; the delete closure removed the row and then read `entry.id` again (inside `removeAll`'s predicate and for the field-text map). The last row's index no longer existed; on any other row the read returned the NEXT provider and cleared its text. Fix: the closure captures the id when it is built (`[id = entry.id]`) and calls `SettingsFormState.removeProvider(id:)`; the Laya question list had the same shape. Guard: `SettingsFormStateProviderTests`.
+
+## Full-size pictures decoded in a view body stall the window
+
+Defect: window moves and typing stuttered while photos or generated media were on screen. Cause: drop wells, reference tiles, previews and chat attachment bubbles built full-size `NSImage`s on the main thread, several straight from `body`, which re-runs on every streamed token and progress tick. Fix: `MediaImage` downsamples with ImageIO off the main thread and caches the result by path, mtime, size and display size; video frames and WAV payloads decode their base64 off the main actor too. Guard: `MediaImageTests`.
+
+## The AI Radio banner ran under the sidebar
+
+Defect: while AI Radio ran, the Music pane's grey "Settings are locked" bar reached past the column and showed under the sidebar. Cause: `.background(.regularMaterial)` takes a shape STYLE, and that overload fills the safe areas (`ignoresSafeAreaEdges: .all`); the floating sidebar covers the detail's leading safe area, so the material drew there. A `.background(view)` stays in bounds, which is why the panes' other cards never did it. Fix: `RadioLockBanner` is a card inside the column's margin, its material drawn `in:` a rounded rectangle, set above the settings with `safeAreaInset`; with the sidebar hidden it no longer touches the window's edge either. Guard: `RadioLockBannerTests` (renders the banner beside a leading safe area and reads the pixels there and in the margin).
+
+### Composer note recovery must wait for the IME
+
+Recovering a steering note while the composer held marked text lost the note:
+the engine cleared it, SwiftUI wrote it into the binding, the redraw guard
+refused to overwrite the composition, and the eventual commit overwrote the
+binding with only the field's text. Keep paused notes in a session-keyed
+restoring store owned by the engine; sending reads only the sending store.
+Restore after SwiftUI observes the end of composition and the committed
+binding is available. Window removal preserves the store; deleting a session
+prunes both stores, even without a running turn.
+Guards: `SteeringNotesTests`, `ComposerMarkedTextTests`.

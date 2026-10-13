@@ -37,9 +37,9 @@ final class SettingsSectionResetTests: XCTestCase {
         o.apiKey = "hunter2"; o.toolAutocorrect = false; o.skipMemPreflight = true
         o.enablePLD = false; o.pldDraftLen = 9; o.pldKeyLen = 9
         o.enableMTP = false; o.mtpDepth = 6
-        o.maxConcurrent = 8; o.kvQuant = .int4; o.prefixCacheEntries = 99
+        o.maxConcurrent = 8; o.kvQuant = .int4; o.hotPrefixCacheEnabled = false; o.prefixCacheEntries = 99
         o.prefixCacheMem = "9GB"; o.enablePrefixCacheDisk = true; o.prefixCacheDisk = "99GB"
-        o.llamaKvQuant = .q4; o.llamaCacheEntries = 9
+        o.llamaKvQuant = .q4; o.llamaCacheEntries = 9; o.llamaMtpDrafts = 0; o.llamaUbatch = 2048
         o.ssdStreaming = true
         o.tokenizeCacheEntries = 9; o.idleEvictSecs = 900
         o.defaultMaxTokens = 99; o.defaultTemperature = 1.9; o.defaultTopP = 0.1
@@ -135,11 +135,9 @@ final class SettingsSectionResetTests: XCTestCase {
 
     // MARK: - Sections with nothing to reset
 
-    /// Model Folders' custom path lives on `DownloadManager`, not `ServerOptions`,
-    /// and Updates has no settings at all — offering a dead "Reset" button on
-    /// those panes would be a lie.
+    /// Updates has no settings at all — offering a dead "Reset" button there
+    /// would be a lie.
     func testSectionsWithNoFieldsAreNotResettable() {
-        XCTAssertFalse(SettingsReset.isResettable(.modelFolders))
         XCTAssertFalse(SettingsReset.isResettable(.updates))
         XCTAssertTrue(SettingsReset.isResettable(.server))
         XCTAssertTrue(SettingsReset.isResettable(.voice))
