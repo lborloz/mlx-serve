@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# The embedded llama.cpp engine decodes a Q2_0 GGUF: Ternary-Bonsai-2-27B answers three short questions correctly
-# (an older pinned llama.cpp loaded the file and returned mixed-script garbage at normal speed).
+# The embedded llama.cpp engine decodes a Q2_0 GGUF: Ternary-Bonsai-2-27B answers three short questions correctly.
 #
 #   Q2_0_GGUF=/path/to/Ternary-Bonsai-2-27B-Q2_0.gguf ./tests/test_llama_q2_0.sh [port]   # unset = SKIP
 set -uo pipefail
